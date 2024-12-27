@@ -1,11 +1,14 @@
 import os
 import sqlite3
+import sys
+from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 from openai import OpenAI, LengthFinishReasonError
-from typing import List
-from pydantic import BaseModel
+from functools import wraps
+from waitress import serve
+from analyser import process_image_recognition
 
 load_dotenv()
 
@@ -78,21 +81,6 @@ def require_credits(user_id: str, db_path: str = 'credits.db'):
 
 
 # -------------------------------------------------------------------
-# Pydantic Model for Handling Response Parsing
-# -------------------------------------------------------------------
-class PictureDescription(BaseModel):
-    """
-    Defines the structure of the expected response content when describing an image:
-    - name: The object's name.
-    - description: A short description of the object.
-    - fun_facts: A list of funny facts about the object.
-    """
-    name: str
-    description: str
-    fun_facts: List[str]
-
-
-# -------------------------------------------------------------------
 # Application Factory
 # -------------------------------------------------------------------
 def create_app() -> Flask:
@@ -100,32 +88,56 @@ def create_app() -> Flask:
     Factory function that creates and returns a Flask app instance.
     """
     app = Flask(__name__)
-    CORS(app)  # Enable CORS
+    CORS(app)
 
     # Initialize OpenAI client
     client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+    api_key = os.getenv('API_KEY')
+
+    def require_api_key_and_user_id(f):
+        """
+        Decorator that verifies the request has a valid API key
+        and a valid user ID in the headers.
+        """
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            api_key_param = request.headers.get('X-Api-Key')
+            if not api_key_param or api_key_param != api_key:
+                return jsonify({"error": "Invalid API key"}), 422
+
+            user_id = request.headers.get('X-User-Id')
+            if not user_id:
+                return jsonify({"error": "Missing required user ID"}), 422
+
+            # Pass user_id along to the route function
+            return f(user_id, *args, **kwargs)
+        return decorated_function
+
+    @app.route('/', methods=['GET', 'POST'])
+    def index():
+        """
+        Index route handler. Returns statistics data.
+        """
+        return jsonify({'message':datetime.now()})
 
     @app.route('/credits', methods=['GET'])
-    def credits_left():
+    @require_api_key_and_user_id
+    def credits_left(user_id):
         """
         Returns the number of credits left for the user.
         """
-        user_id = request.headers.get('X-User-Id')
-        if not user_id:
-            return jsonify({"error": "Missing required user ID"}), 422
-
         user_credits = get_user_credits(user_id)
         return jsonify({'credits': user_credits or 0})
 
-
     @app.route('/analyze/image', methods=['POST'])
-    def analyze_image():
+    @require_api_key_and_user_id
+    def analyze_image(user_id):
         """
         Endpoint that accepts a JSON payload containing:
         - lang: the language in which to generate a description
         - image: a base64-encoded image (JPEG)
         
-        The route validates the input, checks user credits, 
+        Validates input, checks user credits, 
         and calls OpenAI to analyze/describe the image.
         """
         data = request.json
@@ -134,13 +146,8 @@ def create_app() -> Flask:
 
         lang = data.get('lang')
         image = data.get('image')
-
         if not lang or not image:
             return jsonify({'error': 'Missing required fields'}), 422
-
-        user_id = request.headers.get('X-User-Id')
-        if not user_id:
-            return jsonify({"error": "Missing required user ID"}), 422
 
         # Check and decrement user credits
         try:
@@ -150,41 +157,13 @@ def create_app() -> Flask:
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
-        # Call OpenAI API
         try:
-            completion = client.beta.chat.completions.parse(
-                model="gpt-4o-2024-08-06",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": (
-                                    f"Describe the object in the image, tell me its name, "
-                                    f"describe it and give three funny facts about it. "
-                                    f"Use a simple language, use {lang} only"
-                                )
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{image}"
-                                }
-                            }
-                        ]
-                    }
-                ],
-                response_format=PictureDescription,
-                max_tokens=500
-            )
-
-            response_content = completion.choices[0].message
+            response_content = process_image_recognition(client, lang, image)
             if response_content.parsed:
                 return jsonify({
                     'name': response_content.parsed.name,
                     'description': response_content.parsed.description,
-                    'funFacts': response_content.parsed.fun_facts
+                    'fun_facts': response_content.parsed.fun_facts
                 })
 
             if response_content.refusal:
@@ -193,7 +172,6 @@ def create_app() -> Flask:
             return jsonify({'error': 'Image cannot be identified'}), 422
 
         except Exception as e:
-            # Example: Large image => LengthFinishReasonError
             if isinstance(e, LengthFinishReasonError):
                 return jsonify({'error': 'Image too big'}), 422
             return jsonify({'error': str(e)}), 500
@@ -214,7 +192,6 @@ def create_app() -> Flask:
 
     return app
 
-
 # -------------------------------------------------------------------
 # Main Entry Point
 # -------------------------------------------------------------------
@@ -222,5 +199,8 @@ if __name__ == '__main__':
     init_db('credits.db')
 
     app = create_app()
-    debug_mode = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
-    app.run(debug=debug_mode, host='0.0.0.0', port=3000)
+    host = os.getenv('FLASK_HOST')
+    port = os.getenv('FLASK_PORT')
+    if not host or not port:
+        sys.exit(-1)
+    serve(app=app, host=host, port=port)

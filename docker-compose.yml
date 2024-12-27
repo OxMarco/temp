@@ -23,8 +23,10 @@ services:
     restart: unless-stopped
     environment:
       FLASK_ENV: "production"
-      FLASK_DEBUG: "False"
+      FLASK_HOST: "${FLASK_HOST}"
+      FLASK_PORT: "${FLASK_PORT}"
       OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      API_KEY: "${API_KEY}"
     expose:
       - 3000
     volumes:
