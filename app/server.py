@@ -163,7 +163,7 @@ def create_app() -> Flask:
                 return jsonify({
                     'name': response_content.parsed.name,
                     'description': response_content.parsed.description,
-                    'fun_facts': response_content.parsed.fun_facts
+                    'synonyms': response_content.parsed.synonyms
                 })
 
             if response_content.refusal:

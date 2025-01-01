@@ -6,11 +6,11 @@ class PictureDescription(BaseModel):
     Defines the structure of the expected response content when describing an image:
     - name: The object's name.
     - description: A short description of the object.
-    - fun_facts: A list of funny facts about the object.
+    - synonyms: A list of synonyms about the object.
     """
     name: str
     description: str
-    fun_facts: List[str]
+    synonyms: List[str]
 
 class FridgeRecipesList(BaseModel):
     recipes: List[str]
@@ -26,7 +26,7 @@ def process_image_recognition(client, lang, image):
         "type": "text",
           "text": (
             f"Describe the object in the image, tell me its name, "
-            f"describe it and give three funny facts about it. "
+            f"describe it and give three synonyms. "
             f"Use a simple language, use {lang} only"
           )},
           {
